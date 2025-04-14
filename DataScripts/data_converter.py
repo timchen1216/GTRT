@@ -23,13 +23,12 @@ def convert_MOT(track_data, video_name, video_dir, gt_path, convert_labels, gt_t
     if video_name in track_data.keys():
         return track_data
     video_info = {}
-    video_info['video_dir'] = video_dir
-
-    
+    video_info['video_dir'] = video_dir    
 
     # load img
     video_info['images'] = {}
     img_list = os.listdir(video_dir)
+    img_list.sort()  # Ensure the image list is sorted
     for n in range(len(img_list)):
         tmp_idx = img_list[n].rfind(".")
         tmp_idx2 = img_list[n].find("0")

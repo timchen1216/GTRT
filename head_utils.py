@@ -11,7 +11,7 @@ def euclidean_dist(x, y):
     xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
     yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
     dist = xx + yy
-    dist.addmm_(1, -2, x, y.t())
+    dist.addmm_(x, y.t(), beta=1, alpha=-2)  # Updated to use the recommended signature
     dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
     return dist
     
@@ -222,52 +222,81 @@ def get_tracklet_label(N_node, pred_edge_label, edge_idx):
 	return tracklet_label
 
 def get_tracklet_info(tracklet_label, obj_ids, fr_ids, det_embs, gt_embs, scores, temporal_len, device, stage="train"):
+	# Ensure tracklet_label is a PyTorch tensor
+	if isinstance(tracklet_label, np.ndarray):
+		tracklet_label = torch.from_numpy(tracklet_label).to(device)
 
-	uniq_tracklet_label = np.unique(tracklet_label)
-	if uniq_tracklet_label[0]==-1:
+	# Move tracklet_label to CPU before using np.unique
+	uniq_tracklet_label = np.unique(tracklet_label.cpu().numpy())
+	# print("tracklet_label", tracklet_label)
+	# print("tracklet_label", tracklet_label.shape)
+	# print("uniq_tracklet_label", uniq_tracklet_label)
+	if uniq_tracklet_label[0] == -1:
 		uniq_tracklet_label = uniq_tracklet_label[1:]
 
 	N_tracklet = len(uniq_tracklet_label)
 
-	tracklet_embs = torch.zeros(N_tracklet, det_embs.shape[1], temporal_len+1, device=device)
-	tracklet_scores = torch.zeros(N_tracklet, 1, temporal_len+1, device=device)
-	if stage=="train":
-		tracklet_gt_embs = torch.zeros(N_tracklet, det_embs.shape[1], temporal_len+1, device=device)
+	tracklet_embs = torch.zeros(N_tracklet, det_embs.shape[1], temporal_len + 1, device=device)
+	tracklet_scores = torch.zeros(N_tracklet, 1, temporal_len + 1, device=device)
+	if stage == "train":
+		tracklet_gt_embs = torch.zeros(N_tracklet, det_embs.shape[1], temporal_len + 1, device=device)
 		gt_tracklet_labels = np.zeros((N_tracklet))
 
 	for n in range(N_tracklet):
+		# Get indices for the current tracklet
+		tracklet_indices = (tracklet_label == uniq_tracklet_label[n])
+		# print("tracklet_indices", tracklet_indices.shape)
+		if not tracklet_indices.any():
+			continue  # Skip if no indices match
 
-		# get gt tracklet label
-		if stage=="train":
-			gt_node_labels = obj_ids[tracklet_label==uniq_tracklet_label[n]]
-			tmp_bin_count = np.bincount(np.array(gt_node_labels.to('cpu').detach().numpy(), dtype=np.int32))
+		# Normalize frame indices to ensure they are within bounds
+		valid_fr_ids = fr_ids[tracklet_indices].int().tolist()
+		if max(valid_fr_ids) >= temporal_len + 1:
+			print(f"Warning: Frame indices out of bounds for tracklet {n}. Skipping. "
+					f"Max frame index: {max(valid_fr_ids)}, Temporal length: {temporal_len + 1}")
+			continue
+
+		# Get gt tracklet label
+		if stage == "train":
+			gt_node_labels = obj_ids[tracklet_indices]
+			tmp_bin_count = np.bincount(np.array(gt_node_labels.cpu().numpy(), dtype=np.int32))
 			gt_tracklet_labels[n] = np.argmax(tmp_bin_count)
 
-		# get tracklet_embs
-		tracklet_embs[n, :, fr_ids[tracklet_label==uniq_tracklet_label[n]].int().tolist()] = det_embs[tracklet_label==uniq_tracklet_label[n], :].permute(1, 0)		
-		tracklet_scores[n, 0, fr_ids[tracklet_label==uniq_tracklet_label[n]].int().tolist()] = scores[tracklet_label==uniq_tracklet_label[n]]
+		# Get tracklet_embs
+		tracklet_embs[n, :, valid_fr_ids] = det_embs[tracklet_indices, :].permute(1, 0)
+		tracklet_scores[n, 0, valid_fr_ids] = scores[tracklet_indices]
 
-
-		if stage=="train":
-			tracklet_gt_embs[n, :, fr_ids[tracklet_label==uniq_tracklet_label[n]].int().tolist()] = gt_embs[tracklet_label==uniq_tracklet_label[n], :].permute(1, 0)
+		if stage == "train":
+			tracklet_gt_embs[n, :, valid_fr_ids] = gt_embs[tracklet_indices, :].permute(1, 0)
 
 	tracklet_mask1 = tracklet_scores
 	tracklet_mask2 = tracklet_scores.permute(1, 0, 2)
-	tracklet_mask = tracklet_mask1+tracklet_mask2
+	tracklet_mask = tracklet_mask1 + tracklet_mask2
 	mask_max = torch.max(tracklet_mask, dim=2)[0]
-	edge_idx = torch.nonzero(mask_max<1.5)
+	edge_idx = torch.nonzero(mask_max < 1.5)
 	A = torch.zeros_like(mask_max, device=device)
 	A[edge_idx[:, 0], edge_idx[:, 1]] = 1
-	
-	if stage=="train":
+
+	if stage == "train":
 		gt_tracklet_labels = torch.from_numpy(gt_tracklet_labels).float().to(device)
 		binary_label = create_binary_label(gt_tracklet_labels)
-		tracklet_data = {'tracklet_embs': tracklet_embs, 'tracklet_scores': tracklet_scores, 
-			'tracklet_labels': gt_tracklet_labels, 'A': A, 'binary_label': binary_label,
-			'edge_idx': edge_idx, 'tracklet_gt_embs': tracklet_gt_embs}
+		tracklet_data = {
+			'tracklet_embs': tracklet_embs,
+			'tracklet_scores': tracklet_scores,
+			'tracklet_labels': gt_tracklet_labels,
+			'A': A,
+			'binary_label': binary_label,
+			'edge_idx': edge_idx,
+			'tracklet_gt_embs': tracklet_gt_embs
+		}
 	else:
-		tracklet_data = {'tracklet_embs': tracklet_embs, 'tracklet_scores': tracklet_scores, 
-			'A': A, 'edge_idx': edge_idx, 'uniq_tracklet_label': uniq_tracklet_label}
+		tracklet_data = {
+			'tracklet_embs': tracklet_embs,
+			'tracklet_scores': tracklet_scores,
+			'A': A,
+			'edge_idx': edge_idx,
+			'uniq_tracklet_label': uniq_tracklet_label
+		}
 
 	return tracklet_data
 
@@ -282,8 +311,8 @@ def associate_tracklet(Dist, non_A, tracklet_labels, thresh=0.3):
 		if min_dist>thresh:
 			break
 		min_idx = np.unravel_index(np.argmin(Dist, axis=None), Dist.shape)
-		print(min_dist)
-		print(min_idx)
+		# print(min_dist)
+		# print(min_idx)
 		label1 = final_labels[min_idx[0]]
 		label2 = final_labels[min_idx[1]]
 
@@ -313,7 +342,7 @@ def interp(fr_num, obj_id, bbox, N):
     new_fr_num = np.empty((0, 1))
     new_obj_id = np.empty((0, 1))
     new_bbox = np.empty((0, 4))
-    print("max obj id = %d" % max(obj_id))
+    # print("max obj id = %d" % max(obj_id))
     for i in range(min(obj_id), max(obj_id) + 1):
         cur_fr_num = fr_num[obj_id == i]
         cur_id = obj_id[obj_id == i]

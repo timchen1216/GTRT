@@ -181,9 +181,9 @@ class RandomDelete(object):
 
 
 class CreateMOTDataset(data.Dataset):
-    def __init__(self, gt_path, temporal_len=64, transform=None, max_id=300):
+    def __init__(self, data_path, temporal_len=64, transform=None, max_id=300):
         self.temporal_len = temporal_len
-        with open(gt_path) as json_file:
+        with open(data_path) as json_file:
             self.track_data = json.load(json_file)
         self.transform = transform
         seqs = self.track_data['data'].keys()
@@ -213,6 +213,7 @@ class CreateMOTDataset(data.Dataset):
         if self.temporal_len!=-1:
             vid = self.track_data['data_index'][str(idx)]['video_name']
             fr_id = self.track_data['data_index'][str(idx)]['frame_id']
+            # print("frame id: ", fr_id)
             video_st_fr = self.track_data['data'][str(vid)]['start_frame']
             video_end_fr = self.track_data['data'][str(vid)]['end_frame']
             st_fr = fr_id-self.temporal_len//2
