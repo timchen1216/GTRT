@@ -6,14 +6,11 @@ from PIL import Image
 import data_converter
 
 # 設定路徑
-root_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/train"
-seq_map_path = "/home/caig/data/GTRT_data/datasets/DanceTrack/train_seqmap.txt"
+root_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/test"
+seq_map_path = "/home/caig/data/GTRT_data/datasets/DanceTrack/test_seqmap.txt"
 
-det_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/MOTIP_train"
-det_save_path = "TrackAnnos/MOTIP_DanceTrack_train.json"
-
-gt_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/train_gt"
-gt_save_path = "TrackAnnos/GT_DanceTrack_train.json"
+det_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/MOTIP_test"
+det_save_path = "TrackAnnos/MOTIP_DanceTrack_test.json"
 
 
 # 從 seq_map 讀取序列名稱
@@ -26,7 +23,6 @@ def read_seq_map(seq_map_path):
 
 global_cnt = 0
 det_track_data = {}
-gt_track_data = {}
 
 # 從 seq_map 讀取需要處理的序列
 sequences = read_seq_map(seq_map_path)
@@ -40,7 +36,6 @@ for seq_name in sequences:
         root_dir, seq_name, "img1"
     )  # DanceTrack 圖像存儲在 img1 子目錄中
     det_path = os.path.join(det_dir, f"{seq_name}.txt")
-    gt_path = os.path.join(gt_dir, f"{seq_name}.txt")
 
     # 檢查路徑是否存在
     if not os.path.exists(video_dir):
@@ -56,22 +51,13 @@ for seq_name in sequences:
         det_track_data, seq_name, video_dir, det_path, None, "test", None, global_cnt
     )
 
-    gt_track_data, global_cnt = data_converter.convert_MOT(
-        gt_track_data, seq_name, video_dir, gt_path, None, "test", None, global_cnt
-    )
-
 # 索引數據
 det_track_data = data_converter.index_data(det_track_data)
-gt_track_data = data_converter.index_data(gt_track_data)
 print(f"Total annotations: {global_cnt}")
 
 # 寫入 JSON 文件
 print(f"Saving results to {det_save_path}")
 with open(det_save_path, "w") as outfile:
     json.dump(det_track_data, outfile)
-
-print(f"Saving results to {gt_save_path}")
-with open(gt_save_path, "w") as outfile:
-    json.dump(gt_track_data, outfile)
 
 print("Conversion completed successfully!")

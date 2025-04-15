@@ -22,7 +22,9 @@ def train_tracklet_graph_model(
     epoch_loss_BCE = 0.0
 
     for batch, gt_batch in tqdm(
-        zip(dataloader, gt_dataloader), desc="Training Tracklet Graph"
+        zip(dataloader, gt_dataloader),
+        desc="Training Tracklet Graph",
+        total=len(dataloader),
     ):
         optimizer.zero_grad()
 
@@ -32,6 +34,7 @@ def train_tracklet_graph_model(
         batch_obj_ids = []
         batch_scores = []
         gt_batch_bbox = []  # To store ground truth bbox
+        gt_batch_obj_ids = []  # To store ground truth object IDs
         for i in range(len(batch["boxes"])):
             fr_ids = batch["fr_ids"][i].to(device).float()
             bbox = batch["boxes"][i].to(device).float()
@@ -44,12 +47,14 @@ def train_tracklet_graph_model(
             gt_bbox = gt_batch["boxes"][i].to(device).float()
             gt_bbox[:, 0::2] = gt_bbox[:, 0::2] / float(gt_batch["width"][i].item())
             gt_bbox[:, 1::2] = gt_bbox[:, 1::2] / float(gt_batch["height"][i].item())
+            gt_obj_ids = gt_batch["obj_ids"][i].to(device)
 
             batch_fr_ids.append(fr_ids)
             batch_bbox.append(bbox)
             batch_obj_ids.append(obj_ids)
             batch_scores.append(scores)
             gt_batch_bbox.append(gt_bbox)
+            gt_batch_obj_ids.append(gt_obj_ids)
 
         # Concatenate batch data
         fr_ids = torch.cat(batch_fr_ids, dim=0)
@@ -57,14 +62,17 @@ def train_tracklet_graph_model(
         obj_ids = torch.cat(batch_obj_ids, dim=0)
         scores = torch.cat(batch_scores, dim=0)
         gt_bbox = torch.cat(gt_batch_bbox, dim=0)  # Concatenate ground truth bbox
+        gt_obj_ids = torch.cat(
+            gt_batch_obj_ids, dim=0
+        )  # Concatenate ground truth obj IDs
 
         # Build adjacency graph
         edge_idx, A = build_adj_graph(fr_ids, bbox)
 
         # Generate tracklet information
-        tracklet_info = get_tracklet_info(
+        tracklet_data = get_tracklet_info(
             tracklet_label=obj_ids,  # Use obj_ids as tracklet labels
-            obj_ids=obj_ids,
+            obj_ids=gt_obj_ids,  # Use ground truth obj_ids
             fr_ids=fr_ids,
             det_embs=bbox,
             gt_embs=gt_bbox,  # Use ground truth bbox
@@ -74,17 +82,17 @@ def train_tracklet_graph_model(
             stage="train",
         )
 
-        # Assign tracklet labels and additional data
-        tracklet_data = {
-            "tracklet_embs": tracklet_info["tracklet_embs"],
-            "tracklet_scores": tracklet_info["tracklet_scores"],
-            "A": tracklet_info["A"],
-            "edge_idx": tracklet_info["edge_idx"],
-            "tracklet_labels": tracklet_info["tracklet_labels"],  # Ground truth labels
-            "gt_data": tracklet_info["tracklet_gt_embs"],  # Ground truth data
-            "gt_vis_mask": tracklet_info["tracklet_scores"],  # Visibility mask
-            "binary_label": tracklet_info["binary_label"],  # Binary labels
-        }
+        # # Assign tracklet labels and additional data
+        # tracklet_data = {
+        #     "tracklet_embs": tracklet_info["tracklet_embs"],
+        #     "tracklet_scores": tracklet_info["tracklet_scores"],
+        #     "A": tracklet_info["A"],
+        #     "edge_idx": tracklet_info["edge_idx"],
+        #     "tracklet_labels": tracklet_info["tracklet_labels"],  # Ground truth labels
+        #     "gt_data": tracklet_info["tracklet_gt_embs"],  # Ground truth data
+        #     "gt_vis_mask": tracklet_info["tracklet_scores"],  # Visibility mask
+        #     "binary_label": tracklet_info["binary_label"],  # Binary labels
+        # }
 
         # Forward pass
         loss_rec, loss_trip, loss_BCE = tracklet_graph_model(
@@ -153,14 +161,14 @@ def main():
     dataloader = DataLoader(
         mot_data,
         batch_size=batch_size,
-        # sampler=shared_sampler,  # Use shared sampler
+        sampler=shared_sampler,  # Use shared sampler
         num_workers=4,
         collate_fn=custom_collate_fn,
     )
     gt_dataloader = DataLoader(
         gt_data,
         batch_size=batch_size,
-        # sampler=shared_sampler,  # Use shared sampler
+        sampler=shared_sampler,  # Use shared sampler
         num_workers=4,
         collate_fn=custom_collate_fn,
     )

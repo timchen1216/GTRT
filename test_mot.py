@@ -185,6 +185,8 @@ def batch_test_tracklet_graph(
                 import pdb
 
                 pdb.set_trace()
+            # print("tracklet_data", tracklet_data.keys())
+            # print("tracklet_data", tracklet_data["tracklet_embs"].shape)
 
             tmp_uniq_tracklet_label = tracklet_data["uniq_tracklet_label"]
 
@@ -238,88 +240,92 @@ def batch_test_tracklet_graph(
             final_bbox_labels[n] = final_tracklet_labels[int(final_bbox_labels[n])]
 
         if post_precessing:
+            # print("bbox", bbox)
             new_fr_ids, final_bbox_labels, new_bbox = head_utils.interp(
                 fr_ids.cpu().detach().numpy().astype(int),
                 final_bbox_labels.astype(int),
                 bbox.cpu().detach().numpy(),
                 remove_N,
             )
+            # print("new_bbox", new_bbox)
             batch_pred_tracklet_label.append(final_bbox_labels)
             new_bbox[:, 0::2] = new_bbox[:, 0::2] * float(batch_data[b]["width"].item())
             new_bbox[:, 1::2] = new_bbox[:, 1::2] * float(
                 batch_data[b]["height"].item()
             )
+            # print("width", batch_data[b]["width"].item())
+            # print("height", batch_data[b]["height"].item())
             return batch_pred_tracklet_label, new_fr_ids, new_bbox
         else:
             batch_pred_tracklet_label.append(final_bbox_labels)
             return batch_pred_tracklet_label, [], []
 
 
-def batch_test_det_graph(batch_data, det_graph_model):
+# def batch_test_det_graph(batch_data, det_graph_model):
 
-    batch_pred_tracklet_label = []
+#     batch_pred_tracklet_label = []
 
-    for b in range(len(batch_data)):
+#     for b in range(len(batch_data)):
 
-        # convert to cuda
-        fr_ids = batch_data[b]["fr_ids"][0].to(device).float()
-        bbox = batch_data[b]["boxes"][0].to(device).float()
-        bbox = bbox.float()
-        bbox[:, 0::2] = bbox[:, 0::2] / float(batch_data[b]["width"].item())
-        bbox[:, 1::2] = bbox[:, 1::2] / float(batch_data[b]["height"].item())
-        scores = torch.ones(len(bbox), device=device)
+#         # convert to cuda
+#         fr_ids = batch_data[b]["fr_ids"][0].to(device).float()
+#         bbox = batch_data[b]["boxes"][0].to(device).float()
+#         bbox = bbox.float()
+#         bbox[:, 0::2] = bbox[:, 0::2] / float(batch_data[b]["width"].item())
+#         bbox[:, 1::2] = bbox[:, 1::2] / float(batch_data[b]["height"].item())
+#         scores = torch.ones(len(bbox), device=device)
 
-        # graph stat
-        N_node = len(bbox)
-        fr_ids1 = torch.unsqueeze(fr_ids, 1)
-        fr_ids2 = torch.unsqueeze(fr_ids, 0)
-        delta_fr_ids = fr_ids1.cpu() - fr_ids2.cpu()
-        det_edge_idx = torch.nonzero(delta_fr_ids == -1).to(device)
-        agg_dist = torch.zeros(len(det_edge_idx), device=device)
-        agg_cnt = torch.zeros(len(det_edge_idx), device=device)
+#         # graph stat
+#         N_node = len(bbox)
+#         fr_ids1 = torch.unsqueeze(fr_ids, 1)
+#         fr_ids2 = torch.unsqueeze(fr_ids, 0)
+#         delta_fr_ids = fr_ids1.cpu() - fr_ids2.cpu()
+#         det_edge_idx = torch.nonzero(delta_fr_ids == -1).to(device)
+#         agg_dist = torch.zeros(len(det_edge_idx), device=device)
+#         agg_cnt = torch.zeros(len(det_edge_idx), device=device)
 
-        max_fr = torch.max(fr_ids).item()
-        t_fr = 0
-        end_flag = 0
+#         max_fr = torch.max(fr_ids).item()
+#         t_fr = 0
+#         end_flag = 0
 
-        while True:
-            if t_fr + T_det_window <= max_fr + 1:
-                st_fr = t_fr
-                end_fr = t_fr + T_det_window
-            else:
-                st_fr = max_fr + 1 - T_det_window
-                end_fr = max_fr + 1
-                end_flag = 1
+#         while True:
+#             if t_fr + T_det_window <= max_fr + 1:
+#                 st_fr = t_fr
+#                 end_fr = t_fr + T_det_window
+#             else:
+#                 st_fr = max_fr + 1 - T_det_window
+#                 end_fr = max_fr + 1
+#                 end_flag = 1
 
-            cand_ids = torch.nonzero((fr_ids >= st_fr) * (fr_ids < end_fr))
-            tmp_det_embs = bbox[cand_ids[:, 0]]
-            tmp_fr_ids = fr_ids[cand_ids[:, 0]] - st_fr
+#             cand_ids = torch.nonzero((fr_ids >= st_fr) * (fr_ids < end_fr))
+#             tmp_det_embs = bbox[cand_ids[:, 0]]
+#             tmp_fr_ids = fr_ids[cand_ids[:, 0]] - st_fr
 
-            node_input = {"det_embs": tmp_det_embs, "fr_ids": tmp_fr_ids}
+#             node_input = {"det_embs": tmp_det_embs, "fr_ids": tmp_fr_ids}
 
-            tmp_dist = det_graph_predictor(node_input, det_graph_model)
+#             tmp_dist = det_graph_predictor(node_input, det_graph_model)
 
-            tmp_edge_st_idx = torch.nonzero(
-                (det_edge_idx[:, 0] >= cand_ids[0, 0])
-                * (det_edge_idx[:, 0] <= cand_ids[-1, 0])
-            )[0, 0]
-            agg_dist[tmp_edge_st_idx : tmp_edge_st_idx + len(tmp_dist)] += tmp_dist
-            agg_cnt[tmp_edge_st_idx : tmp_edge_st_idx + len(tmp_dist)] += 1
+#             tmp_edge_st_idx = torch.nonzero(
+#                 (det_edge_idx[:, 0] >= cand_ids[0, 0])
+#                 * (det_edge_idx[:, 0] <= cand_ids[-1, 0])
+#             )[0, 0]
+#             agg_dist[tmp_edge_st_idx : tmp_edge_st_idx + len(tmp_dist)] += tmp_dist
+#             agg_cnt[tmp_edge_st_idx : tmp_edge_st_idx + len(tmp_dist)] += 1
 
-            t_fr += T_det_stride
-            if end_flag == 1:
-                break
+#             t_fr += T_det_stride
+#             if end_flag == 1:
+#                 break
 
-        avg_dist = agg_dist / agg_cnt
-        pred_edge_label = head_utils.get_pred_edge_label(
-            len(fr_ids), avg_dist, det_edge_idx, emb_dist_thresh, device
-        )
-        tracklet_label = head_utils.get_tracklet_label(
-            len(fr_ids), pred_edge_label, det_edge_idx
-        )
-        batch_pred_tracklet_label.append(tracklet_label)
+#         avg_dist = agg_dist / agg_cnt
+#         pred_edge_label = head_utils.get_pred_edge_label(
+#             len(fr_ids), avg_dist, det_edge_idx, emb_dist_thresh, device
+#         )
+#         tracklet_label = head_utils.get_tracklet_label(
+#             len(fr_ids), pred_edge_label, det_edge_idx
+#         )
+#         batch_pred_tracklet_label.append(tracklet_label)
 
-    return batch_pred_tracklet_label
+#     return batch_pred_tracklet_label
 
 
 def test_tracklet_graph():
@@ -327,11 +333,11 @@ def test_tracklet_graph():
     color_table = np.random.rand(5000, 3)
 
     # det graph model
-    det_graph_model = build_det_graph.DetGraphEmb(device)
-    det_graph_model.to(device)
-    det_graph_checkpoint = torch.load(det_graph_model_load_path, map_location=device)
-    det_graph_model.load_state_dict(det_graph_checkpoint["model_state_dict"])
-    det_graph_model.eval()
+    # det_graph_model = build_det_graph.DetGraphEmb(device)
+    # det_graph_model.to(device)
+    # det_graph_checkpoint = torch.load(det_graph_model_load_path, map_location=device)
+    # det_graph_model.load_state_dict(det_graph_checkpoint["model_state_dict"])
+    # det_graph_model.eval()
 
     # tracklet graph model
     tracklet_graph_model = head_gnn.BoxEmb(tracklet_temporal_len + 1, device)
@@ -344,7 +350,8 @@ def test_tracklet_graph():
 
     # data loader
     comp_transforms = transforms.Compose([BoxClip()])
-    mot_data = CreateMOTDataset(train_data_path, -1, transform=comp_transforms)
+    mot_data = CreateMOTDataset(test_data_path, -1, transform=comp_transforms)
+    # mot_data = CreateMOTDataset(train_data_path, -1, transform=comp_transforms)
     dataloader = DataLoader(mot_data, batch_size=1, shuffle=False, num_workers=4)
 
     # prediction
@@ -354,11 +361,13 @@ def test_tracklet_graph():
         tqdm(dataloader, desc="Processing batches")
     ):  # Added tqdm
         seq_cnt += 1
+        # print("sample[boxes]", sample["boxes"].shape)
+        # print("sample[boxes]", sample["boxes"])
 
         batch_data.append(sample)
         st_time = time.time()
         batch_pred_tracklet_label, new_fr_ids, new_bbox = batch_test_tracklet_graph(
-            batch_data, det_graph_model, tracklet_graph_model, post_precessing, remove_N
+            batch_data, None, tracklet_graph_model, post_precessing, remove_N
         )
         end_time = time.time()
         batch_data = []
@@ -367,7 +376,7 @@ def test_tracklet_graph():
         tmp_label = batch_pred_tracklet_label[0].copy()
 
         if post_precessing:
-            sample["fr_ids"] = torch.from_numpy(new_fr_ids).unsqueeze(0)
+            sample["fr_ids"] = torch.from_numpy(new_fr_ids).unsqueeze(0).int()
             sample["boxes"] = torch.from_numpy(new_bbox).unsqueeze(0)
 
         # assign new label
@@ -429,7 +438,14 @@ def test_tracklet_graph():
                     )
 
             tmp_idx = sample["fr_ids"] == n
+            # print("sample[fr_ids]", sample["fr_ids"].shape)
+            # print("sample[fr_ids]", sample["fr_ids"])
+            # print("sample[boxes]", sample["boxes"].shape)
+            # print("sample[boxes]", sample["boxes"])
+            # print("tmp_idx", tmp_idx)
             tmp_bboxes = sample["boxes"][tmp_idx].detach().numpy()
+            # print("tmp_bboxes", tmp_bboxes.shape)
+            # print("tmp_bboxes", tmp_bboxes)
             tmp_track_ids = batch_pred_tracklet_label[0][tmp_idx.detach().numpy()[0]]
             for k in range(len(tmp_bboxes)):
 
