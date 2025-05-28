@@ -58,7 +58,6 @@ def convert_MOT(
 
     # load gt
     track_gt = np.loadtxt(gt_path, delimiter=",", dtype=str)
-    # print(len(track_gt))
     for n in range(len(track_gt)):
         if gt_type == "train":
             class_id = int(track_gt[n][7])
@@ -97,7 +96,6 @@ def convert_MOT(
         video_info["images"][fr_id]["annotations"].append(tmp_ann)
         global_cnt += 1
 
-    # print(video_info)
     track_data[video_name] = video_info
 
     return track_data, global_cnt

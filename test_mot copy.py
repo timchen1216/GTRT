@@ -182,13 +182,13 @@ def test_tracklet_graph():
 
         # Generate tracklet information
         tracklet_info = head_utils.get_tracklet_info(
-            tracklet_label=torch.arange(
+            det_ids=torch.arange(
                 len(fr_ids), device=device
             ),  # Dummy labels for testing
-            obj_ids=torch.zeros(len(fr_ids), device=device),  # Dummy object IDs
+            gt_ids=torch.zeros(len(fr_ids), device=device),  # Dummy object IDs
             fr_ids=fr_ids,
-            det_embs=bbox,
-            gt_embs=bbox,  # Assuming bbox is used as ground truth embeddings
+            det_bboxes=bbox,
+            gt_bboxes=bbox,  # Assuming bbox is used as ground truth embeddings
             scores=scores,
             temporal_len=tracklet_temporal_len,
             device=device,

@@ -45,7 +45,7 @@ def det_graph(node_input):
 
 
 def batch_test_tracklet_graph(
-    batch_data, det_graph_model, tracklet_graph_model, post_precessing, remove_N
+    batch_data, tracklet_graph_model, post_precessing, remove_N, device
 ):
 
     batch_pred_tracklet_label = []
@@ -130,10 +130,12 @@ def batch_test_tracklet_graph(
         # )
         tracklet_label = obj_ids.cpu().detach().numpy()
         # print("tracklet_label", tracklet_label.shape)
-        # print("tracklet_label", tracklet_label)
+        # print("tracklet_label", tracklet_label[:10])
 
         ###################
         uniq_tracklet_labels = np.unique(tracklet_label)
+        # print("uniq_tracklet_labels", uniq_tracklet_labels.shape)
+        # print("uniq_tracklet_labels", uniq_tracklet_labels)
         N_tracklet = len(uniq_tracklet_labels)
         total_D = np.zeros((N_tracklet, N_tracklet))
         total_cnt = np.zeros((N_tracklet, N_tracklet))
@@ -169,22 +171,19 @@ def batch_test_tracklet_graph(
                     break
                 continue
 
-            try:
-                tracklet_data = head_utils.get_tracklet_info(
-                    select_tracklet_label,
-                    None,
-                    select_fr_ids - st_fr,
-                    select_bbox,
-                    None,
-                    select_scores,
-                    tracklet_temporal_len,
-                    device,
-                    "test",
-                )
-            except:
-                import pdb
+            tracklet_data = head_utils.get_tracklet_info(
+                det_ids=select_tracklet_label,
+                gt_ids=None,
+                det_fr_ids=select_fr_ids - st_fr,
+                gt_fr_ids=None,
+                det_bboxes=select_bbox,
+                gt_bboxes=None,
+                scores=select_scores,
+                temporal_len=tracklet_temporal_len,
+                device=device,
+                stage="test",
+            )
 
-                pdb.set_trace()
             # print("tracklet_data", tracklet_data.keys())
             # print("tracklet_data", tracklet_data["tracklet_embs"].shape)
 
@@ -200,16 +199,18 @@ def batch_test_tracklet_graph(
                 continue
 
             # get the dist
-            try:
-                with torch.no_grad():
-                    tmp_Dist = tracklet_graph_model(tracklet_data, "test")
-            except:
-                import pdb
+            for k, v in tracklet_data.items():
+                if isinstance(v, torch.Tensor):
+                    tracklet_data[k] = v.unsqueeze(0)
+            # for k, v in tracklet_data.items():
+            #     print(k, v.shape if isinstance(v, torch.Tensor) else v)
+            with torch.no_grad():
+                tmp_Dist = tracklet_graph_model(data=tracklet_data, stage="test")
 
-                pdb.set_trace()
-
+            # print("tmp_Dist", tmp_Dist.shape)
             tmp_Dist = tmp_Dist.cpu().detach().numpy()
-            A = tracklet_data["A"].cpu().detach().numpy()
+            A = tracklet_data["A"].squeeze(0).cpu().detach().numpy()
+            # print("A", A)
 
             # map the tmp uniq id to the total id idx
             tmp_map_idx = []
@@ -217,6 +218,19 @@ def batch_test_tracklet_graph(
                 tmp_map_idx.append(
                     np.where(uniq_tracklet_labels == tmp_uniq_tracklet_label[n])[0][0]
                 )
+            # print("tmp_map_idx", tmp_map_idx)
+            # print("tmp_Dist\n", tmp_Dist[:3, :3])
+            # print("tmp_map_idx", tmp_map_idx)
+            # print("total_D", total_D.shape)
+            # print("tmp_Dist", tmp_Dist.shape)
+            # print("A", A.shape)
+            # print("total_cnt", total_cnt.shape)
+            # for i in range(len(tmp_map_idx)):
+            #     for j in range(len(tmp_map_idx)):
+            #         total_D[tmp_map_idx[i], tmp_map_idx[j]] += tmp_Dist[i, j]
+            #         total_cnt[tmp_map_idx[i], tmp_map_idx[j]] += A[i, j]
+            #         non_A[tmp_map_idx[i], tmp_map_idx[j]] += 1 - A[i, j]
+            #         print(total_D[tmp_map_idx[i], tmp_map_idx[j]])
             for n in range(len(tmp_Dist)):
                 total_D[tmp_map_idx[n], tmp_map_idx] += tmp_Dist[n, :]
                 total_cnt[tmp_map_idx[n], tmp_map_idx] += A[n, :]
@@ -231,30 +245,30 @@ def batch_test_tracklet_graph(
         total_cnt[total_cnt == 0] = 1
         avg_Dist = total_D / total_cnt
 
-        final_tracklet_labels = head_utils.associate_tracklet(
+        # 這裡是主要的ID關聯預測
+        final_tracklet_labels = head_utils.associate_tracklet_ori(
             avg_Dist, non_A, uniq_tracklet_labels, thresh=tracklet_associate_thresh
         )
+        # print("final_tracklet_labels", final_tracklet_labels.shape)
+        # print("final_tracklet_labels", final_tracklet_labels)
 
+        # 將預測的軌跡ID映射回每個檢測框
         final_bbox_labels = tracklet_label.copy()
         for n in range(len(final_bbox_labels)):
             final_bbox_labels[n] = final_tracklet_labels[int(final_bbox_labels[n])]
 
         if post_precessing:
-            # print("bbox", bbox)
             new_fr_ids, final_bbox_labels, new_bbox = head_utils.interp(
                 fr_ids.cpu().detach().numpy().astype(int),
                 final_bbox_labels.astype(int),
                 bbox.cpu().detach().numpy(),
                 remove_N,
             )
-            # print("new_bbox", new_bbox)
             batch_pred_tracklet_label.append(final_bbox_labels)
             new_bbox[:, 0::2] = new_bbox[:, 0::2] * float(batch_data[b]["width"].item())
             new_bbox[:, 1::2] = new_bbox[:, 1::2] * float(
                 batch_data[b]["height"].item()
             )
-            # print("width", batch_data[b]["width"].item())
-            # print("height", batch_data[b]["height"].item())
             return batch_pred_tracklet_label, new_fr_ids, new_bbox
         else:
             batch_pred_tracklet_label.append(final_bbox_labels)
@@ -329,6 +343,11 @@ def batch_test_tracklet_graph(
 
 
 def test_tracklet_graph():
+    # Ensure the device is set correctly
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )  # Remove local device definition
+
     # color table
     color_table = np.random.rand(5000, 3)
 
@@ -345,7 +364,17 @@ def test_tracklet_graph():
     tracklet_graph_checkpoint = torch.load(
         tracklet_graph_model_load_path, map_location=device
     )
-    tracklet_graph_model.load_state_dict(tracklet_graph_checkpoint["model_state_dict"])
+    print("tracklet_graph_model_load_path", tracklet_graph_model_load_path)
+
+    # 处理可能包含DataParallel前缀的状态字典
+    state_dict = tracklet_graph_checkpoint["model_state_dict"]
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        name = k[7:] if k.startswith("module.") else k  # 移除'module.'前缀
+        new_state_dict[name] = v
+
+    # print(new_state_dict)
+    tracklet_graph_model.load_state_dict(new_state_dict)
     tracklet_graph_model.eval()
 
     # data loader
@@ -366,9 +395,12 @@ def test_tracklet_graph():
 
         batch_data.append(sample)
         st_time = time.time()
+        # print("device", device)
+
         batch_pred_tracklet_label, new_fr_ids, new_bbox = batch_test_tracklet_graph(
-            batch_data, None, tracklet_graph_model, post_precessing, remove_N
+            batch_data, tracklet_graph_model, post_precessing, remove_N, device
         )
+        # print("batch_pred_tracklet_label", batch_pred_tracklet_label)
         end_time = time.time()
         batch_data = []
         if len(batch_pred_tracklet_label) == 0:
@@ -381,6 +413,8 @@ def test_tracklet_graph():
 
         # assign new label
         uniq_label = np.unique(tmp_label)
+        # print("uniq_label", uniq_label.shape)
+        # print("uniq_label", uniq_label)
         for n in range(len(uniq_label)):
             batch_pred_tracklet_label[0][tmp_label == uniq_label[n]] = n
         final_N = len(uniq_label)
@@ -447,6 +481,8 @@ def test_tracklet_graph():
             # print("tmp_bboxes", tmp_bboxes.shape)
             # print("tmp_bboxes", tmp_bboxes)
             tmp_track_ids = batch_pred_tracklet_label[0][tmp_idx.detach().numpy()[0]]
+            # print("tmp_track_ids", tmp_track_ids.shape)
+            # print("tmp_track_ids", tmp_track_ids)
             for k in range(len(tmp_bboxes)):
 
                 tmp_id = int(tmp_track_ids[k])

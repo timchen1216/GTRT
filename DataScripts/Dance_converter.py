@@ -6,14 +6,14 @@ from PIL import Image
 import data_converter
 
 # 設定路徑
-root_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/train"
-seq_map_path = "/home/caig/data/GTRT_data/datasets/DanceTrack/train_seqmap.txt"
+root_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/val"
+seq_map_path = "/home/caig/data/GTRT_data/datasets/DanceTrack/val_seqmap.txt"
 
-det_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/MOTIP_train"
-det_save_path = "TrackAnnos/MOTIP_DanceTrack_train.json"
+det_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/MOTIP_val"
+det_save_path = "TrackAnnos/MOTIP_DanceTrack_val.json"
 
-gt_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/train_gt"
-gt_save_path = "TrackAnnos/GT_DanceTrack_train.json"
+gt_dir = "/home/caig/data/GTRT_data/datasets/DanceTrack/val_gt"
+gt_save_path = "TrackAnnos/GT_DanceTrack_val.json"
 
 
 # 從 seq_map 讀取序列名稱

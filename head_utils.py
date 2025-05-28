@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 import scipy.spatial.distance as sci_dist
 from scipy import interpolate
+from collections import Counter
+from config import soft_label
 
 
 def euclidean_dist(x, y):
@@ -254,7 +256,177 @@ def get_tracklet_label(N_node, pred_edge_label, edge_idx):
     return tracklet_label
 
 
+def calculate_iou(det_bbox, gt_bboxes):
+    """
+    計算檢測邊界框與多個 GT 邊界框的 IoU。
+
+    Args:
+        det_bbox (Tensor): 檢測邊界框，形狀為 (4,)。
+        gt_bboxes (Tensor): GT 邊界框，形狀為 (N, 4)。
+
+    Returns:
+        Tensor: IoU 值，形狀為 (N,)。
+    """
+    # print("det_bbox shape:", det_bbox.shape)
+    # print("gt_bboxes shape:", gt_bboxes.shape)
+    # print("det_bbox:", det_bbox)
+    # print("gt_bboxes:", gt_bboxes)
+    x1 = torch.max(det_bbox[0], gt_bboxes[:, 0])
+    y1 = torch.max(det_bbox[1], gt_bboxes[:, 1])
+    x2 = torch.min(det_bbox[2], gt_bboxes[:, 2])
+    y2 = torch.min(det_bbox[3], gt_bboxes[:, 3])
+
+    inter_area = torch.clamp(x2 - x1, min=0) * torch.clamp(y2 - y1, min=0)
+    det_area = (det_bbox[2] - det_bbox[0]) * (det_bbox[3] - det_bbox[1])
+    gt_areas = (gt_bboxes[:, 2] - gt_bboxes[:, 0]) * (gt_bboxes[:, 3] - gt_bboxes[:, 1])
+    union_area = det_area + gt_areas - inter_area
+
+    return inter_area / union_area
+
+
 def get_tracklet_info(
+    det_ids,
+    gt_ids,
+    det_fr_ids,
+    gt_fr_ids,
+    det_bboxes,
+    gt_bboxes,
+    scores,
+    temporal_len,
+    device,
+    stage="train",
+):
+    # Ensure tracklet_label is a PyTorch tensor
+    # print("device:", device)
+    if isinstance(det_ids, np.ndarray):
+        det_ids = torch.from_numpy(det_ids).to(device)
+
+    # Move tracklet_label to CPU before using np.unique
+    uniq_tracklet_label = np.unique(det_ids.cpu().numpy())
+    if uniq_tracklet_label[0] == -1:
+        uniq_tracklet_label = uniq_tracklet_label[1:]
+
+    N_tracklet = len(uniq_tracklet_label)
+
+    tracklet_embs = torch.zeros(
+        N_tracklet, det_bboxes.shape[1], temporal_len + 1, device=device
+    )
+    tracklet_scores = torch.zeros(N_tracklet, 1, temporal_len + 1, device=device)
+    if stage == "train":
+        tracklet_gt_bboxes = torch.zeros(
+            N_tracklet, det_bboxes.shape[1], temporal_len + 1, device=device
+        )
+        gt_tracklet_labels = np.zeros((N_tracklet))
+
+    for n in range(N_tracklet):
+
+        # Get indices for the current tracklet
+        tracklet_indices = det_ids == uniq_tracklet_label[n]
+        if not tracklet_indices.any():
+            continue  # Skip if no indices match
+
+        # Normalize frame indices to ensure they are within bounds
+        valid_fr_ids = det_fr_ids[tracklet_indices].int().tolist()
+        valid_fr_ids = [
+            fid for fid in valid_fr_ids if 0 <= fid <= temporal_len
+        ]  # Ensure valid indices
+
+        # Ensure the number of valid frame indices matches the number of bounding boxes
+        if len(valid_fr_ids) != torch.sum(tracklet_indices).item():
+            print(
+                f"Warning: Mismatch between valid frame indices and bounding boxes for tracklet {n}. Skipping."
+            )
+            continue
+
+        # Get tracklet_embs
+        # print("det_bboxes shape:", det_bboxes.shape)
+        # print("tracklet_embs shape:", tracklet_embs.shape)
+        # print("tracklet_embs shape:", tracklet_embs)
+        tracklet_embs[n, :, valid_fr_ids] = det_bboxes[tracklet_indices, :].permute(
+            1, 0
+        )
+        scores = scores.to(device)
+        tracklet_scores[n, 0, valid_fr_ids] = scores[tracklet_indices]
+
+        # Get gt tracklet label
+        if stage == "train":
+            counter = Counter()
+            for idx in torch.nonzero(tracklet_indices).squeeze(1):
+                frame_id = det_fr_ids[idx]
+                det_bbox = det_bboxes[idx]
+
+                # Find all gt_bboxes in the same frame
+                same_frame_gt_indices = torch.nonzero(gt_fr_ids == frame_id).squeeze(1)
+                same_frame_gt_bboxes = gt_bboxes[same_frame_gt_indices]
+
+                if same_frame_gt_bboxes.size(0) > 0:
+                    # Compute IoU
+                    iou = calculate_iou(det_bbox, same_frame_gt_bboxes)
+
+                    # Find the GT with the highest IoU
+                    max_iou_idx = torch.argmax(iou)
+                    counter[int(gt_ids[same_frame_gt_indices[max_iou_idx]].item())] += 1
+                    # tracklet_gt_bboxes[n, :, frame_id] = same_frame_gt_bboxes[
+                    #     max_iou_idx, :
+                    # ]
+
+            if counter.total() > 0:
+                gt_tracklet_labels[n] = counter.most_common(1)[0][0]
+            else:
+                gt_tracklet_labels[n] = -1
+
+        if stage == "train":
+            for det_fr_id in det_fr_ids[tracklet_indices]:
+                matching_gt_indices = torch.nonzero(
+                    (gt_fr_ids == det_fr_id) & (gt_ids == gt_tracklet_labels[n])
+                ).squeeze(1)
+                for gt_idx in matching_gt_indices:
+                    temporal_position = int(det_fr_id.item())
+                    tracklet_gt_bboxes[n, :, temporal_position] = gt_bboxes[gt_idx, :]
+
+    tracklet_mask1 = tracklet_scores
+    tracklet_mask2 = tracklet_scores.permute(1, 0, 2)
+    tracklet_mask = tracklet_mask1 + tracklet_mask2
+    mask_max = torch.max(tracklet_mask, dim=2)[0]
+    # print("mask_max", mask_max)
+    edge_idx = torch.nonzero(mask_max < 1.5)
+    # print("soft_label", soft_label)
+    # if soft_label:
+    #     edge_idx = torch.nonzero(mask_max < 1.9)
+    # else:
+    #     edge_idx = torch.nonzero(mask_max < 3.0)
+    # edge_idx = torch.nonzero(mask_max < 3.0)
+    A = torch.zeros_like(mask_max, device=device)
+    A[edge_idx[:, 0], edge_idx[:, 1]] = 1
+    # print("edge_idx", edge_idx)
+    # print("tracklet_mask", tracklet_mask)
+
+    if stage == "train":
+        gt_tracklet_labels = torch.from_numpy(gt_tracklet_labels).float().to(device)
+        binary_label = create_binary_label(gt_tracklet_labels)
+        tracklet_data = {
+            "tracklet_embs": tracklet_embs,
+            "tracklet_scores": tracklet_scores,
+            "tracklet_labels": gt_tracklet_labels,
+            "A": A,
+            "binary_label": binary_label,
+            "edge_idx": edge_idx,
+            "tracklet_gt_embs": tracklet_gt_bboxes,
+        }
+        # print("tracklet_data", tracklet_data)
+    else:
+        tracklet_data = {
+            "tracklet_embs": tracklet_embs,
+            "tracklet_scores": tracklet_scores,
+            "A": A,
+            "edge_idx": edge_idx,
+            "uniq_tracklet_label": uniq_tracklet_label,
+        }
+
+    return tracklet_data
+
+
+def get_tracklet_info_ori(
     tracklet_label,
     obj_ids,
     fr_ids,
@@ -265,12 +437,8 @@ def get_tracklet_info(
     device,
     stage="train",
 ):
-    # Ensure tracklet_label is a PyTorch tensor
-    if isinstance(tracklet_label, np.ndarray):
-        tracklet_label = torch.from_numpy(tracklet_label).to(device)
 
-    # Move tracklet_label to CPU before using np.unique
-    uniq_tracklet_label = np.unique(tracklet_label.cpu().numpy())
+    uniq_tracklet_label = np.unique(tracklet_label)
     if uniq_tracklet_label[0] == -1:
         uniq_tracklet_label = uniq_tracklet_label[1:]
 
@@ -287,39 +455,27 @@ def get_tracklet_info(
         gt_tracklet_labels = np.zeros((N_tracklet))
 
     for n in range(N_tracklet):
-        # Get indices for the current tracklet
-        tracklet_indices = tracklet_label == uniq_tracklet_label[n]
-        # print("tracklet_indices", tracklet_indices.shape)
-        if not tracklet_indices.any():
-            continue  # Skip if no indices match
 
-        # Normalize frame indices to ensure they are within bounds
-        valid_fr_ids = fr_ids[tracklet_indices].int().tolist()
-        if max(valid_fr_ids) >= temporal_len + 1:
-            print(
-                f"Warning: Frame indices out of bounds for tracklet {n}. Skipping. "
-                f"Max frame index: {max(valid_fr_ids)}, Temporal length: {temporal_len + 1}"
-            )
-            continue
-
-        # Get gt tracklet label
+        # get gt tracklet label
         if stage == "train":
-            gt_node_labels = obj_ids[tracklet_indices]  # 過濾出當前 tracklet 的物件 ID
+            gt_node_labels = obj_ids[tracklet_label == uniq_tracklet_label[n]]
             tmp_bin_count = np.bincount(
-                np.array(gt_node_labels.cpu().numpy(), dtype=np.int32)
-            )  # 計算每個物件 ID 的出現次數
-            gt_tracklet_labels[n] = np.argmax(
-                tmp_bin_count
-            )  # 找到出現次數最多的物件 ID
+                np.array(gt_node_labels.to("cpu").detach().numpy(), dtype=np.int32)
+            )
+            gt_tracklet_labels[n] = np.argmax(tmp_bin_count)
 
-        # Get tracklet_embs
-        tracklet_embs[n, :, valid_fr_ids] = det_embs[tracklet_indices, :].permute(1, 0)
-        tracklet_scores[n, 0, valid_fr_ids] = scores[tracklet_indices]
+        # get tracklet_embs
+        tracklet_embs[
+            n, :, fr_ids[tracklet_label == uniq_tracklet_label[n]].int().tolist()
+        ] = det_embs[tracklet_label == uniq_tracklet_label[n], :].permute(1, 0)
+        tracklet_scores[
+            n, 0, fr_ids[tracklet_label == uniq_tracklet_label[n]].int().tolist()
+        ] = scores[tracklet_label == uniq_tracklet_label[n]]
 
         if stage == "train":
-            tracklet_gt_embs[n, :, valid_fr_ids] = gt_embs[tracklet_indices, :].permute(
-                1, 0
-            )
+            tracklet_gt_embs[
+                n, :, fr_ids[tracklet_label == uniq_tracklet_label[n]].int().tolist()
+            ] = gt_embs[tracklet_label == uniq_tracklet_label[n], :].permute(1, 0)
 
     tracklet_mask1 = tracklet_scores
     tracklet_mask2 = tracklet_scores.permute(1, 0, 2)
@@ -353,7 +509,7 @@ def get_tracklet_info(
     return tracklet_data
 
 
-def associate_tracklet(Dist, non_A, tracklet_labels, thresh=0.3):
+def associate_tracklet_ori(Dist, non_A, tracklet_labels, thresh=0.3):
     final_labels = tracklet_labels.copy()
     A = non_A.copy()
     A[A > 0] = 1
@@ -368,6 +524,55 @@ def associate_tracklet(Dist, non_A, tracklet_labels, thresh=0.3):
         label1 = final_labels[min_idx[0]]
         label2 = final_labels[min_idx[1]]
 
+        final_labels[final_labels == label1] = min(label1, label2)
+        final_labels[final_labels == label2] = min(label1, label2)
+
+        Dist[min_idx[0], min_idx[1]] = 100
+        Dist[min_idx[1], min_idx[0]] = 100
+
+        A[min_idx[0], min_idx[1]] = 1
+        A[min_idx[1], min_idx[0]] = 1
+
+        new_tmp_A = np.sum(A[final_labels == min(label1, label2), :], 0)
+        idx = np.where(final_labels == min(label1, label2))[0]
+        for k in range(len(idx)):
+            A[idx[k], :] = new_tmp_A
+            A[:, idx[k]] = new_tmp_A
+        Dist[A > 0] = 100
+
+    return final_labels
+
+
+def associate_tracklet(Dist, non_A, tracklet_labels, thresh=0.3):
+    final_labels = tracklet_labels.copy()
+    # print("tracklet_labels", tracklet_labels)
+    A = non_A.copy()
+    A[A > 0] = 1
+    Dist[A > 0] = 100
+
+    # 添加字典來記錄每一幀的id
+    frame_id_dict = {}
+
+    while True:
+        min_dist = np.min(Dist)
+        if min_dist > thresh:
+            break
+        min_idx = np.unravel_index(np.argmin(Dist, axis=None), Dist.shape)
+
+        label1 = final_labels[min_idx[0]]
+        label2 = final_labels[min_idx[1]]
+
+        # 檢查兩個軌跡是否有時間重疊
+        frames1 = set(np.where(final_labels == label1)[0])
+        frames2 = set(np.where(final_labels == label2)[0])
+
+        # 如果有時間重疊，不進行合併
+        if frames1.intersection(frames2):
+            Dist[min_idx[0], min_idx[1]] = 100
+            Dist[min_idx[1], min_idx[0]] = 100
+            continue
+
+        # 如果沒有重疊，執行合併
         final_labels[final_labels == label1] = min(label1, label2)
         final_labels[final_labels == label2] = min(label1, label2)
 
@@ -443,3 +648,84 @@ def interp(fr_num, obj_id, bbox, N):
         new_fr_num = np.append(new_fr_num, interp_fr_num.reshape(cur_count, 1), axis=0)
 
     return np.squeeze(new_fr_num), np.squeeze(new_obj_id), new_bbox
+
+
+def test_get_tracklet_info():
+    # 模擬輸入數據
+    det_ids = torch.tensor([1, 1, 1, 2, 2, 2, 3, 3])
+    gt_ids = torch.tensor([10, 10, 10, 20, 20, 30, 30, 30])
+    det_fr_ids = torch.tensor([1, 2, 3, 1, 2, 3, 1, 2])
+    gt_fr_ids = torch.tensor([1, 2, 3, 1, 2, 3, 1, 2])
+    det_bboxes = torch.tensor(
+        [
+            [0.1, 0.1, 0.2, 0.2],
+            [0.1, 0.1, 0.2, 0.2],
+            [0.1, 0.1, 0.2, 0.2],
+            [0.2, 0.2, 0.3, 0.3],
+            [0.3, 0.3, 0.4, 0.4],
+            [0.3, 0.3, 0.4, 0.4],
+            [0.3, 0.3, 0.4, 0.4],
+            [0.2, 0.2, 0.3, 0.3],
+        ]
+    )
+    gt_bboxes = torch.tensor(
+        [
+            [0.1, 0.1, 0.2, 0.2],
+            [0.1, 0.1, 0.2, 0.2],
+            [0.1, 0.1, 0.2, 0.2],
+            [0.2, 0.2, 0.3, 0.3],
+            [0.3, 0.3, 0.4, 0.4],
+            [0.2, 0.2, 0.3, 0.3],
+            [0.3, 0.3, 0.4, 0.4],
+            [0.2, 0.2, 0.3, 0.3],
+        ]
+    )
+    scores = torch.tensor([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2])
+    temporal_len = 3
+    device = "cpu"
+    stage = "train"
+
+    tracklet_data = get_tracklet_info(
+        det_ids=det_ids,
+        gt_ids=gt_ids,
+        det_fr_ids=det_fr_ids,
+        gt_fr_ids=gt_fr_ids,
+        det_bboxes=det_bboxes,
+        gt_bboxes=gt_bboxes,
+        scores=scores,
+        temporal_len=temporal_len,
+        device=device,
+        stage=stage,
+    )
+
+    # tracklet_data = get_tracklet_info_ori(
+    #     tracklet_label=det_ids,
+    #     obj_ids=gt_ids,
+    #     fr_ids=det_fr_ids,
+    #     det_embs=det_bboxes,
+    #     gt_embs=gt_bboxes,
+    #     scores=scores,
+    #     temporal_len=temporal_len,
+    #     device=device,
+    #     stage=stage,
+    # )
+
+    # 打印結果
+    print("Tracklet Embeddings:")
+    print(tracklet_data["tracklet_embs"])
+    print("Tracklet Scores:")
+    print(tracklet_data["tracklet_scores"])
+    print("Tracklet Labels:")
+    print(tracklet_data["tracklet_labels"])
+    print("Adjacency Matrix A:")
+    print(tracklet_data["A"])
+    print("Binary Label:")
+    print(tracklet_data["binary_label"])
+    print("Edge Index:")
+    print(tracklet_data["edge_idx"])
+    print("Tracklet GT Embeddings:")
+    print(tracklet_data["tracklet_gt_embs"])
+
+
+if __name__ == "__main__":
+    test_get_tracklet_info()

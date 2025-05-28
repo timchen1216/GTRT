@@ -8,8 +8,16 @@ import random
 
 class TrackletSplit(object):
     def __init__(self, p0=0.9, p1=0.95, p2=0.9):
+        # p0: 初始保持概率 - 決定軌跡是否從一開始就要保持
+        # 較高的p0表示大多數軌跡會從頭開始保持
         self.p0 = p0
+
+        # p1: 持續保持概率 - 當前是保持狀態時,下一幀繼續保持的概率
+        # 較高的p1使得連續幀更可能保持在一起
         self.p1 = p1
+
+        # p2: 持續移除概率 - 當前是移除狀態時,下一幀繼續移除的概率
+        # 較高的p2使得一旦開始移除就會連續移除多幀
         self.p2 = p2
 
     def __call__(self, sample):
@@ -38,7 +46,7 @@ class TrackletSplit(object):
                         v = True
 
         sample["boxes"] = np.delete(sample["boxes"], remove_idx, 0)
-        sample["gt_boxes"] = np.delete(sample["gt_boxes"], remove_idx, 0)
+        # sample["gt_boxes"] = np.delete(sample["gt_boxes"], remove_idx, 0)
         sample["classes"] = np.delete(sample["classes"], remove_idx, 0)
         sample["obj_ids"] = np.delete(sample["obj_ids"], remove_idx, 0)
         sample["fr_ids"] = np.delete(sample["fr_ids"], remove_idx, 0)
@@ -47,21 +55,28 @@ class TrackletSplit(object):
 
 class AddFP(object):
     def __init__(self, temporal_len, fpr=0.1):
+        # fpr: false positive rate - 每個真實檢測框可能產生假陽性的概率
         self.fpr = fpr
+        # temporal_len: 視頻片段的總幀數
         self.temporal_len = temporal_len
 
     def __call__(self, sample):
         h = sample["height"]
         w = sample["width"]
 
+        # 對每一幀進行處理
         for t in range(self.temporal_len):
+            # 計算當前所有檢測框的寬度和高度
             box_w = (sample["boxes"][:, 2] - sample["boxes"][:, 0]).copy()
             box_h = (sample["boxes"][:, 3] - sample["boxes"][:, 1]).copy()
 
+            # 找出當前幀的所有檢測框索引
             cand_ids = np.where(sample["fr_ids"] == t)[0]
+            # 如果當前幀檢測框少於2個,跳過(因為需要計算均值和標準差)
             if len(cand_ids) < 2:
                 continue
 
+            # 根據fpr決定要添加多少個假陽性
             fp_num = 0
             for k in range(len(cand_ids)):
                 if np.random.rand() < self.fpr:
@@ -70,6 +85,8 @@ class AddFP(object):
             if fp_num == 0:
                 continue
 
+            # 計算當前幀中檢測框的統計特徵:
+            # 中心點(x,y)和寬高(w,h)的均值和標準差
             mean_x = np.mean(sample["boxes"][cand_ids, 0])
             mean_y = np.mean(sample["boxes"][cand_ids, 1])
             mean_w = np.mean(box_w[cand_ids])
@@ -79,11 +96,14 @@ class AddFP(object):
             std_w = np.std(box_w[cand_ids])
             std_h = np.std(box_h[cand_ids])
 
-            xx = np.random.normal(mean_x, std_x, fp_num)
-            yy = np.random.normal(mean_y, std_y, fp_num)
-            ww = np.clip(np.random.normal(mean_w, std_w, fp_num), 0, w)
-            hh = np.clip(np.random.normal(mean_h, std_h, fp_num), 0, h)
+            # 根據統計特徵生成假陽性框
+            # 使用正態分布生成新的檢測框位置和大小
+            xx = np.random.normal(mean_x, std_x, fp_num)  # 中心點x
+            yy = np.random.normal(mean_y, std_y, fp_num)  # 中心點y
+            ww = np.clip(np.random.normal(mean_w, std_w, fp_num), 0, w)  # 寬度
+            hh = np.clip(np.random.normal(mean_h, std_h, fp_num), 0, h)  # 高度
 
+            # 組裝成[x1,y1,x2,y2]格式的框
             fp_box = np.stack([xx, yy, xx + ww, yy + hh], 1).astype(np.int32)
 
             # concatenate according to fr order
@@ -225,22 +245,22 @@ class RandomDelete(object):
 
 
 class CreateMOTDataset(data.Dataset):
-    def __init__(self, data_path, temporal_len=64, transform=None, max_id=300):
+    def __init__(self, data_path, temporal_len=64, transform=None, stride=1):
         self.temporal_len = temporal_len
         with open(data_path) as json_file:
             self.track_data = json.load(json_file)
         self.transform = transform
+        self.stride = stride
         seqs = self.track_data["data"].keys()
         self.vids = []
         for key in seqs:
             self.vids.append(key)
-        self.max_id = max_id
 
     def __len__(self):
         if self.temporal_len == -1:
             return len(self.track_data["data"].keys())
         else:
-            return len(self.track_data["data_index"].keys())
+            return len(self.track_data["data_index"].keys()) // self.stride
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -254,9 +274,10 @@ class CreateMOTDataset(data.Dataset):
         seq_obj_ids = []
         seq_img_paths = []
         if self.temporal_len != -1:
+            idx = idx * self.stride
             vid = self.track_data["data_index"][str(idx)]["video_name"]
             fr_id = self.track_data["data_index"][str(idx)]["frame_id"]
-            # print("frame id: ", fr_id)
+            # print("vid: ", vid, " fr_id: ", fr_id)
             video_st_fr = self.track_data["data"][str(vid)]["start_frame"]
             video_end_fr = self.track_data["data"][str(vid)]["end_frame"]
             st_fr = fr_id - self.temporal_len // 2
@@ -269,6 +290,7 @@ class CreateMOTDataset(data.Dataset):
             end_fr = video_end_fr
 
         fr_cnt = 0
+        # print("st_fr: ", st_fr, " end_fr: ", end_fr)
         for n in range(st_fr, end_fr + 1):
 
             cur_fr = n
