@@ -3,4 +3,4 @@ save_txt/**
 save_img/**/*
 save_txt/**/*
 models/**
-precomputed_models/**
+precomputed_data/**
