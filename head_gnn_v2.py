@@ -13,7 +13,7 @@ class BoxEmb(torch.nn.Module):
         self.l2_loss = torch.nn.MSELoss()
 
         # propagation layer
-        prop_arch = [[8, 16, 32, 32, 32, 4], [5, 5, 5, 5, 5, 5]]
+        prop_arch = [[8, 16, 32, 32, 32, 4], [5, 5, 5, 5, 5, 5]]  # [channel, kernel]
         self.prop_layers = torch.nn.ModuleList([])
         for n in range(num_layer):
             tmp_layer = torch.nn.ModuleList([])
@@ -31,7 +31,7 @@ class BoxEmb(torch.nn.Module):
             self.prop_layers.append(tmp_layer)
 
         # gated layer
-        gate_arch = [[8, 16, 32, 32, 32, 1], [5, 5, 5, 5, 5, 5]]
+        gate_arch = [[8, 16, 32, 32, 32, 1], [5, 5, 5, 5, 5, 5]]  # [channel, kernel]
         self.gate_layers = torch.nn.ModuleList([])
         for n in range(num_layer):
             tmp_layer = torch.nn.ModuleList([])
@@ -196,6 +196,11 @@ class BoxEmb(torch.nn.Module):
     def _forward_single(self, data, device="cuda", stage="train"):
         # for k, v in data.items():
         #     print(f"Key: {k}, Shape: {v.shape if isinstance(v, torch.Tensor) else v}")
+
+        # X [N, D, T]
+        # A [N, N]
+        # edge_idx [E, 2]
+        # scores [N, 1, T]
         X, A, edge_idx, scores = (
             data["tracklet_embs"].to(device),
             data["A"].to(device),
@@ -226,12 +231,13 @@ class BoxEmb(torch.nn.Module):
             # compute similarity
             # print("edge_idx", edge_idx.shape)
             # print("edge_idx", edge_idx[0][0])
+
             sim_score = self.get_similarity(
                 X[edge_idx[:, 0].tolist()],
                 scores[edge_idx[:, 0].tolist()],
                 X[edge_idx[:, 1].tolist()],
                 scores[edge_idx[:, 1].tolist()],
-            )
+            )  # [E, 1]
 
             att = torch.zeros(N, N, device=self.device)
             att[edge_idx[:, 0].tolist(), edge_idx[:, 1].tolist()] = sim_score[:, 0]

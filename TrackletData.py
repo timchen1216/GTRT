@@ -16,6 +16,7 @@ class TrackletData(nn.Module):
         self.binary_label = merged_info["binary_label"]
         self.edge_idx = merged_info["edge_idx"]
         self.tracklet_gt_embs = merged_info["tracklet_gt_embs"]
+        self.time_window = merged_info["time_window"]
         # self.tracklet_gt_embs = merged_info["tracklet_gt_embs"]
         # self.tracklet_scores = []
         # self.tracklet_labels = []
@@ -98,6 +99,7 @@ class TrackletDataset(Dataset):
         self.edge_idx = tracklet_data.edge_idx
         # print("edge_idx", self.edge_idx.shape)
         self.tracklet_gt_embs = tracklet_data.tracklet_gt_embs
+        self.time_window = tracklet_data.time_window
 
     def __len__(self):
         return len(self.tracklet_embs)
@@ -111,4 +113,5 @@ class TrackletDataset(Dataset):
             "binary_label": self.binary_label[idx],
             "edge_idx": self.edge_idx[idx],
             "tracklet_gt_embs": self.tracklet_gt_embs[idx],
+            "time_window": self.time_window[idx],
         }

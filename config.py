@@ -27,7 +27,7 @@ soft_label = False
 # Model paths
 # det_graph_model_load_path = "models/local_model_KITTI.tar"
 # tracklet_graph_model_load_path = "models/tracklet_graph_model_best_DA.tar"
-tracklet_graph_model_load_path = "models/tracklet_graph_model_best_loss001.tar"
+tracklet_graph_model_load_path = "weights/gtrt_tf.tar"
 
 # Output directories
 save_tracklet_graph_img_dir = "save_img/DanceTrack_test"
@@ -45,16 +45,27 @@ device = torch.device(
 
 # Temporal and batch settings
 det_temporal_len = 16
-tracklet_temporal_len = 128
+tracklet_temporal_len = 32
 T_det_window = 17
 T_det_stride = 5
-T_tracklet_stride = 5
+T_tracklet_stride = 4
 
-tracklet_temporal_stride = 5  # New parameter to control frame interval
-batch_size = 4
+# Model parameters
+num_epoch = 10
+num_id_vocabulary = 50
+emb_dim = 256
+hidden_dim = 512
+num_layers = 6
+num_heads = 8
+dropout_prob = 0.1
+max_length = 10000
 
-# 新增配置參數
-prefetch_factor = 2
+# teacher_forcing_prob = 0.5
+teacher_forcing_coef = 0.6
+
+tracklet_temporal_stride = 4  # New parameter to control frame interval
+batch_size = 64
+prefetch_factor = 1
 num_workers_per_gpu = 4
 
 # Thresholds and post-processing

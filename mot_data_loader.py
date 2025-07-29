@@ -245,22 +245,60 @@ class RandomDelete(object):
 
 
 class CreateMOTDataset(data.Dataset):
-    def __init__(self, data_path, temporal_len=64, transform=None, stride=1):
+    # 靜態類變量用於共享隨機狀態
+    _shared_rng = random.Random(42)  # 固定種子
+    _frame_skips = {}  # 用於存儲每個索引的跳幀狀態
+
+    def __init__(
+        self,
+        data_path,
+        temporal_len=64,
+        transform=None,
+        stride=4,
+        random_skip=True,
+    ):
         self.temporal_len = temporal_len
+        self.random_skip = random_skip
+        self.stride = stride
+
         with open(data_path) as json_file:
             self.track_data = json.load(json_file)
         self.transform = transform
-        self.stride = stride
-        seqs = self.track_data["data"].keys()
-        self.vids = []
-        for key in seqs:
-            self.vids.append(key)
+
+        # 獲取所有影片序列
+        seqs = list(self.track_data["data"].keys())
+        self.vids = seqs
+
+        # 建立新的索引映射
+        self._build_video_index()
+
+    def _build_video_index(self):
+        """建立影片順序的索引映射"""
+        self.video_indices = []
+
+        for vid in self.vids:
+            video_data = self.track_data["data"][str(vid)]
+            video_st_fr = video_data["start_frame"]
+            video_end_fr = video_data["end_frame"]
+
+            # 計算該影片可以產生多少個樣本
+            # 從start_frame開始，每次stride步長，直到temporal_len範圍內
+            current_start = video_st_fr
+
+            while current_start + self.temporal_len - 1 <= video_end_fr + self.stride:
+                self.video_indices.append(
+                    {"video_name": vid, "start_frame": current_start}
+                )
+                current_start += self.stride
+
+        # print(f"Total samples: {len(self.video_indices)}")
+        # for i, item in enumerate(self.video_indices[:10]):  # 顯示前10個樣本
+        #     print(
+        #         f"Sample {i}: video {item['video_name']}, start frame {item['start_frame']}"
+        #     )
 
     def __len__(self):
-        if self.temporal_len == -1:
-            return len(self.track_data["data"].keys())
-        else:
-            return len(self.track_data["data_index"].keys()) // self.stride
+        return len(self.video_indices)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -268,41 +306,51 @@ class CreateMOTDataset(data.Dataset):
 
         sample = {}
 
+        # 從新的索引映射中獲取影片和起始幀
+        video_info = self.video_indices[idx]
+        vid = video_info["video_name"]
+        st_fr = video_info["start_frame"]
+        end_fr = st_fr + self.temporal_len - 1
+
+        # print(f"Processing sample {idx}: video {vid}, frames {st_fr} to {end_fr}")
+
         seq_boxes = []
         seq_fr_ids = []
         seq_classes = []
         seq_obj_ids = []
         seq_img_paths = []
-        if self.temporal_len != -1:
-            idx = idx * self.stride
-            vid = self.track_data["data_index"][str(idx)]["video_name"]
-            fr_id = self.track_data["data_index"][str(idx)]["frame_id"]
-            # print("vid: ", vid, " fr_id: ", fr_id)
-            video_st_fr = self.track_data["data"][str(vid)]["start_frame"]
-            video_end_fr = self.track_data["data"][str(vid)]["end_frame"]
-            st_fr = fr_id - self.temporal_len // 2
-            end_fr = fr_id + self.temporal_len // 2
-        else:
-            vid = self.vids[idx]
-            video_st_fr = self.track_data["data"][str(vid)]["start_frame"]
-            video_end_fr = self.track_data["data"][str(vid)]["end_frame"]
-            st_fr = video_st_fr
-            end_fr = video_end_fr
+
+        video_st_fr = self.track_data["data"][str(vid)]["start_frame"]
+        video_end_fr = self.track_data["data"][str(vid)]["end_frame"]
 
         fr_cnt = 0
-        # print("st_fr: ", st_fr, " end_fr: ", end_fr)
-        for n in range(st_fr, end_fr + 1):
 
+        # 為每個新的idx生成跳幀序列
+        if idx not in self._frame_skips:
+            self._frame_skips[idx] = []
+            current_frame = st_fr
+            while current_frame <= end_fr:
+                skip = self._shared_rng.randint(0, 3) if self.random_skip else 0
+                self._frame_skips[idx].extend([current_frame])
+                current_frame += skip + 1
+
+        # 使用預先生成的跳幀序列
+        selected_frames = self._frame_skips[idx]
+        # print("Selected frames:", selected_frames)
+
+        for n in selected_frames:
             cur_fr = n
             if n < video_st_fr:
                 cur_fr = video_st_fr
             if n > video_end_fr:
                 cur_fr = video_end_fr
+
             seq_img_paths.append(
                 self.track_data["data"][str(vid)]["video_dir"]
                 + "/"
                 + self.track_data["data"][vid]["images"][str(cur_fr)]["image_name"]
             )
+
             if "height" not in sample.keys():
                 sample["height"] = self.track_data["data"][str(vid)]["height"]
                 sample["width"] = self.track_data["data"][str(vid)]["width"]
@@ -310,7 +358,7 @@ class CreateMOTDataset(data.Dataset):
             boxes = []
             classes = []
             obj_ids = []
-            img_names = []
+
             for m in range(
                 len(
                     self.track_data["data"][str(vid)]["images"][str(cur_fr)][
@@ -350,6 +398,7 @@ class CreateMOTDataset(data.Dataset):
             seq_classes = np.concatenate(seq_classes, 0)
             seq_obj_ids = np.concatenate(seq_obj_ids, 0)
             seq_fr_ids = np.concatenate(seq_fr_ids, 0)
+
         sample["boxes"] = seq_boxes
         sample["classes"] = seq_classes
         sample["obj_ids"] = seq_obj_ids
@@ -359,5 +408,14 @@ class CreateMOTDataset(data.Dataset):
 
         if self.transform and len(seq_boxes) > 0:
             sample = self.transform(sample)
+
+        sample["start_frame"] = (
+            max(selected_frames[0], video_st_fr) if selected_frames else st_fr
+        )
+        sample["end_frame"] = (
+            min(selected_frames[-1], video_end_fr) if selected_frames else end_fr
+        )
+        sample["video_name"] = str(vid)
+        # print(str(vid))
 
         return sample

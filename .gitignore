@@ -2,5 +2,5 @@ save_img/**
 save_txt/**
 save_img/**/*
 save_txt/**/*
-models/**
+weights/**
 precomputed_data/**

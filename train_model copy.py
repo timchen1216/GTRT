@@ -2,10 +2,6 @@ import einops
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import os
-import matplotlib.pyplot as plt
-
-# from torch.optim.lr_scheduler import MultiStepLR  # 添加 MultiStepLR 导入
 from torch.utils.data import DataLoader, RandomSampler
 from torchvision import transforms
 from tqdm import tqdm
@@ -21,134 +17,54 @@ from head_utils import get_tracklet_info
 from TrackletData import TrackletData, TrackletDataset
 
 
-# def custom_collate_fn(batch):
-#     """
-#     Custom collate function to handle variable-sized tensors in tracklet data.
-#     Pads tensors to the maximum size in each dimension within the batch using -1 as padding value.
-#     """
-#     if len(batch) == 0:
-#         return {}
-
-#     # Get all keys from the first sample
-#     keys = batch[0].keys()
-#     collated_batch = {}
-
-#     for key in keys:
-#         values = [sample[key] for sample in batch]
-
-#         # Handle tensor data
-#         if isinstance(values[0], torch.Tensor):
-#             # Get the maximum dimensions for this key across all samples
-#             if len(values[0].shape) >= 2:
-#                 # For multi-dimensional tensors, pad to max size in each dimension
-#                 shapes = [v.shape for v in values]
-#                 max_dims = [max(dim_sizes) for dim_sizes in zip(*shapes)]
-
-#                 # Pad each tensor to the maximum dimensions
-#                 padded_values = []
-#                 for v in values:
-#                     # Calculate padding needed for each dimension (from the end)
-#                     padding = []
-#                     for i in range(len(v.shape) - 1, -1, -1):
-#                         pad_size = max_dims[i] - v.shape[i]
-#                         padding.extend([0, pad_size])
-
-#                     # Apply padding with -1 as padding value
-#                     if any(p > 0 for p in padding):
-#                         padded_v = torch.nn.functional.pad(v, padding, value=-1)
-#                     else:
-#                         padded_v = v
-#                     padded_values.append(padded_v)
-
-#                 # Stack the padded tensors
-#                 collated_batch[key] = torch.stack(padded_values, dim=0)
-#             else:
-#                 # For 1D tensors, use pad_sequence with -1 padding
-#                 collated_batch[key] = pad_sequence(
-#                     values, batch_first=True, padding_value=-1
-#                 )
-
-#         # Handle non-tensor data (like lists, scalars, etc.)
-#         else:
-#             collated_batch[key] = values
-
-
-#     return collated_batch
-def custom_collate_fn_explicit(batch):
+def custom_collate_fn(batch):
     """
-    Custom collate function with explicit padding value mapping.
+    Custom collate function to handle variable-sized tensors in tracklet data.
+    Pads tensors to the maximum size in each dimension within the batch using -1 as padding value.
     """
     if len(batch) == 0:
         return {}
 
-    # Define padding values for specific keys
-    PADDING_VALUES = {
-        # Mask tensors should be padded with False
-        "tracklet_mask": False,
-        "history_mask": False,
-        "tracklet_id_mask": False,
-        "history_id_mask": False,
-        "gt_mask": False,
-        # Label tensors should be padded with -1 (invalid label)
-        "tracklet_labels": -1,
-        "history_labels": -1,
-        "gt_labels": -1,
-        # Coordinate/bbox tensors should be padded with -1 (invalid coordinate)
-        "tracklet_bbox": -1.0,
-        "history_bbox": -1.0,
-        "gt_bboxes": -1.0,
-        # Other tensors default to 0
-        "binary_label": 0,
-        "time_window": 0.0,
-        "history_time_window": 0.0,
-    }
-
+    # Get all keys from the first sample
     keys = batch[0].keys()
     collated_batch = {}
 
     for key in keys:
         values = [sample[key] for sample in batch]
 
+        # Handle tensor data
         if isinstance(values[0], torch.Tensor):
-            # Get padding value for this key
-            padding_value = PADDING_VALUES.get(
-                key, -1
-            )  # Default to -1 if not specified
-
-            # Ensure padding value matches tensor dtype
-            first_tensor = values[0]
-            if first_tensor.dtype == torch.bool:
-                padding_value = bool(padding_value)
-            elif first_tensor.dtype.is_floating_point:
-                padding_value = float(padding_value)
-            else:
-                padding_value = int(padding_value)
-
-            # Rest of the padding logic remains the same...
+            # Get the maximum dimensions for this key across all samples
             if len(values[0].shape) >= 2:
+                # For multi-dimensional tensors, pad to max size in each dimension
                 shapes = [v.shape for v in values]
                 max_dims = [max(dim_sizes) for dim_sizes in zip(*shapes)]
 
+                # Pad each tensor to the maximum dimensions
                 padded_values = []
                 for v in values:
+                    # Calculate padding needed for each dimension (from the end)
                     padding = []
                     for i in range(len(v.shape) - 1, -1, -1):
                         pad_size = max_dims[i] - v.shape[i]
                         padding.extend([0, pad_size])
 
+                    # Apply padding with -1 as padding value
                     if any(p > 0 for p in padding):
-                        padded_v = torch.nn.functional.pad(
-                            v, padding, value=padding_value
-                        )
+                        padded_v = torch.nn.functional.pad(v, padding, value=-1)
                     else:
                         padded_v = v
                     padded_values.append(padded_v)
 
+                # Stack the padded tensors
                 collated_batch[key] = torch.stack(padded_values, dim=0)
             else:
+                # For 1D tensors, use pad_sequence with -1 padding
                 collated_batch[key] = pad_sequence(
-                    values, batch_first=True, padding_value=padding_value
+                    values, batch_first=True, padding_value=-1
                 )
+
+        # Handle non-tensor data (like lists, scalars, etc.)
         else:
             collated_batch[key] = values
 
@@ -168,71 +84,15 @@ def create_padding_mask(original_tensor, padded_tensor):
     return mask
 
 
-def plot_loss_curves(train_losses, val_losses, save_path="loss_curves.png"):
-    """
-    Plot training and validation loss curves.
-
-    Args:
-        train_losses: List of training losses per epoch
-        val_losses: List of validation losses per epoch
-        save_path: Path to save the plot
-    """
-    plt.figure(figsize=(10, 6))
-    epochs = range(1, len(train_losses) + 1)
-    # print(val_losses)
-
-    plt.plot(epochs, train_losses, "b-", label="Training Loss", linewidth=2)
-    plt.plot(epochs, val_losses, "r-", label="Validation Loss", linewidth=2)
-
-    plt.title(
-        "Training and Validation Loss Over Epochs", fontsize=14, fontweight="bold"
-    )
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Loss", fontsize=12)
-    plt.legend(fontsize=11)
-    plt.grid(True, alpha=0.3)
-
-    # Add annotations for minimum validation loss
-    min_val_idx = val_losses.index(min(val_losses))
-    min_val_loss = val_losses[min_val_idx]
-    min_val_epoch = min_val_idx + 1
-
-    plt.annotate(
-        f"Min Val Loss: {min_val_loss:.4f}\nEpoch: {min_val_epoch}",
-        xy=(min_val_epoch, min_val_loss),
-        xytext=(
-            min_val_epoch + len(epochs) * 0.1,
-            min_val_loss + (max(val_losses) - min(val_losses)) * 0.1,
-        ),
-        arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
-    )
-
-    plt.tight_layout()
-
-    # Create directory if it doesn't exist
-    os.makedirs(
-        os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True
-    )
-
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()  # Close the figure to free memory
-    print(f"Loss curve saved to: {save_path}")
-
-
 # Function to train the tracklet graph model
 def train_tracklet_graph_model(
-    tracklet_graph_model,
-    tracklet_data,
-    optimizer,
-    loss_weight,
-    teacher_forcing_prob,
-    device,
+    tracklet_graph_model, tracklet_data, optimizer, loss_weight, device
 ):
     tracklet_graph_model.train()
-    torch.autograd.set_detect_anomaly(True)
     total_loss = 0.0
+    batch_loss_rec = 0.0
+    batch_loss_trip = 0.0
+    batch_loss_BCE = 0.0
 
     weight_rec, weight_trip, weight_BCE = loss_weight
     external_state = {
@@ -248,8 +108,12 @@ def train_tracklet_graph_model(
         leave=True,
         mininterval=0.1,  # 更新頻率設為0.1秒
     )
-    # return total_loss
+
     for batch_idx, batch in progress_bar:
+        batch_start = torch.cuda.Event(enable_timing=True)
+        batch_end = torch.cuda.Event(enable_timing=True)
+
+        batch_start.record()
 
         # Move batch to device all at once
         batch = {
@@ -266,11 +130,7 @@ def train_tracklet_graph_model(
         # seq_info = prepare_seq_info(data=batch, device=device)
         batch["external_last_pred"] = external_state["last_pred_labels"]
         batch["external_last_masks"] = external_state["last_pred_masks"]
-
-        result = tracklet_graph_model(
-            data=batch, teacher_forcing_prob=teacher_forcing_prob, stage="train"
-        )
-
+        result = tracklet_graph_model(data=batch, stage="train")
         if "pred_labels" in result and "pred_masks" in result:
             external_state["last_pred_labels"] = result["pred_labels"]
             external_state["last_pred_masks"] = result["pred_masks"]
@@ -288,40 +148,44 @@ def train_tracklet_graph_model(
         loss.backward()
         optimizer.step()
 
+        batch_end.record()
         torch.cuda.synchronize()
+        batch_time = batch_start.elapsed_time(batch_end)
 
         # Update statistics
         total_loss += loss.item()
         # batch_loss_rec += sum([l.mean().item() for l in loss_rec])
         # batch_loss_trip += sum([l.mean().item() for l in loss_trip])
-        # batch_loss_BCE += sum([l.mean().item() for l in loss_BCE])
+        batch_loss_BCE += sum([l.mean().item() for l in loss_BCE])
         if device.type == "cuda":
             torch.cuda.empty_cache()
-
-        memory_info = (
-            f"{torch.cuda.memory_allocated() / 1024**3:.1f}GB"
-            if torch.cuda.is_available()
-            else "N/A"
-        )
 
         # Update progress bar with actual timing
         progress_bar.set_postfix(
             {
+                "batch_time": f"{batch_time:.1f}ms",
                 "batch_loss": f"{loss.item():.4f}",
                 "avg_loss": f"{total_loss/ (batch_idx + 1):.4f}",
-                "memory": memory_info,
             }
         )
         # 立即刪除不需要的變量
         del batch, result, loss_BCE, loss
     # Return total loss and individual losses
-    return total_loss / len(tracklet_data)
+    return (
+        total_loss / len(tracklet_data),
+        batch_loss_rec / len(tracklet_data),
+        batch_loss_trip / len(tracklet_data),
+        batch_loss_BCE / len(tracklet_data),
+    )
 
 
 # Function to validate the tracklet graph model
 def validate_tracklet_graph_model(tracklet_graph_model, val_data, loss_weight, device):
     tracklet_graph_model.eval()
     total_val_loss = 0.0
+    val_loss_rec = 0.0
+    val_loss_trip = 0.0
+    val_loss_BCE = 0.0
 
     weight_rec, weight_trip, weight_BCE = loss_weight
     external_state = {
@@ -338,10 +202,7 @@ def validate_tracklet_graph_model(tracklet_graph_model, val_data, loss_weight, d
     )
 
     with torch.no_grad():
-        # return total_val_loss
         for batch_idx, batch in progress_bar:
-            # if batch_idx < 3020:
-            #     continue
             batch = {
                 k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
@@ -357,30 +218,29 @@ def validate_tracklet_graph_model(tracklet_graph_model, val_data, loss_weight, d
                 external_state["last_pred_labels"] = result["pred_labels"]
                 external_state["last_pred_masks"] = result["pred_masks"]
             loss_BCE = result["bce_loss"]
-            # print("loss_BCE", loss_BCE)
-
-            loss = loss_BCE.mean()  # Assuming loss_BCE is a list of losses
-            # print("loss", loss)
+            batch_loss = loss_BCE.mean()
 
             # Update statistics
-            total_val_loss += loss.item()
-            memory_info = (
-                f"{torch.cuda.memory_allocated() / 1024**3:.1f}GB"
-                if torch.cuda.is_available()
-                else "N/A"
-            )
+            total_val_loss += batch_loss.item()
+            # val_loss_rec += sum([l.mean().item() for l in loss_rec])
+            # val_loss_trip += sum([l.mean().item() for l in loss_trip])
+            val_loss_BCE += sum([l.mean().item() for l in loss_BCE])
 
             progress_bar.set_postfix(
                 {
-                    "val_loss": f"{loss.item():.4f}",
+                    "val_loss": f"{batch_loss.item():.4f}",
                     "avg_val_loss": f"{total_val_loss / (batch_idx + 1):.4f}",
-                    "memory": memory_info,
                 }
             )
             # 立即刪除不需要的變量
-            del batch, result, loss_BCE
+            del batch, result, loss_BCE, batch_loss
 
-    return total_val_loss / len(val_data)
+    return (
+        total_val_loss / len(val_data),
+        val_loss_rec / len(val_data),
+        val_loss_trip / len(val_data),
+        val_loss_BCE / len(val_data),
+    )
 
 
 # Main training function
@@ -400,7 +260,7 @@ def main():
 
     # Initialize tracklet graph model
     tracklet_graph_model = GTRT(
-        temporal_length=tracklet_temporal_len,
+        temporal_length=tracklet_temporal_len + 1,
         num_id_vocabulary=num_id_vocabulary,
         emb_dim=emb_dim,
         hidden_dim=hidden_dim,
@@ -419,23 +279,11 @@ def main():
     print("Tracklet graph model initialized.")
 
     # Optimizer
-    tracklet_optimizer = optim.AdamW(
-        tracklet_graph_model.parameters(),
-        lr=1e-4,  # 降低學習率
-        weight_decay=5e-4,
-        eps=1e-8,
-    )  # 增大 epsilon
-
-    # 添加学习率调度器
-    # scheduler = MultiStepLR(
-    #     tracklet_optimizer,
-    #     milestones=[5, 10, 15],  # 在第5、10、15个epoch调整学习率
-    #     gamma=0.5  # 每次调整将学习率乘以0.5
-    # )
+    tracklet_optimizer = optim.AdamW(tracklet_graph_model.parameters(), lr=1e-4)
 
     # Load precomputed tracklet data
-    tracklet_data_path = "precomputed_data/dance_motip_tracklet_data_T32_S4.pt"
-    val_data_path = "precomputed_data/dance_motip_val_tracklet_data_T32_S4.pt"
+    tracklet_data_path = "precomputed_data/dance_motip_tracklet_data_T64_S4.pt"
+    val_data_path = "precomputed_data/dance_motip_val_tracklet_data_T64_S4.pt"
     # tracklet_data_path = "precomputed_data/tracklet_data.pt"
     # val_data_path = "precomputed_data/val_tracklet_data.pt"
     print(f"Loading tracklet data from {tracklet_data_path}...")
@@ -473,7 +321,7 @@ def main():
         persistent_workers=False,  # num_workers=0 時必須為 False
         prefetch_factor=None,  # num_workers=0 時設為 None
         drop_last=True,
-        collate_fn=custom_collate_fn_explicit,
+        collate_fn=custom_collate_fn,
     )
 
     # val_data = DataLoader(
@@ -496,63 +344,45 @@ def main():
         persistent_workers=False,  # 保持worker進程存活
         prefetch_factor=None,  # 預加載1個batch
         drop_last=True,
-        collate_fn=custom_collate_fn_explicit,  # Use custom collate function
+        collate_fn=custom_collate_fn,  # Use custom collate function
     )
 
-    # Create directories for saving plots and weights
-    os.makedirs("plots", exist_ok=True)
-    os.makedirs("weights", exist_ok=True)
-
     print("Starting training...")
-    num_epochs = num_epoch
+    num_epochs = 20
     best_val_loss = float("inf")
     loss_weight = [1.0, 1.0, 1.0]  # rec, triplet, BCE
-    teacher_forcing_prob = 1.0
-
-    # Lists to store loss values for plotting
-    train_losses = []
-    val_losses = []
 
     for epoch in range(num_epochs):
         try:
             print(f"Epoch {epoch + 1}/{num_epochs}")
-            # print(f"Current learning rate: {scheduler.get_last_lr()[0]:.2e}")  # 显示当前学习率
 
             # Train phase
-            # if epoch != 0 and epoch % 2 == 0:
-            #     teacher_forcing_prob = pow(teacher_forcing_coef, epoch / 2)
-            # if epoch != 0 and epoch % 4 == 0:
-            #     teacher_forcing_prob = pow(teacher_forcing_coef, epoch / 4)
-            print("teacher_forcing_prob", teacher_forcing_prob)
-
-            train_loss = train_tracklet_graph_model(
-                tracklet_graph_model,
-                tracklet_data,
-                tracklet_optimizer,
-                loss_weight,
-                teacher_forcing_prob,
-                device,
+            train_loss, train_loss_rec, train_loss_trip, train_loss_BCE = (
+                train_tracklet_graph_model(
+                    tracklet_graph_model,
+                    tracklet_data,
+                    tracklet_optimizer,
+                    loss_weight,
+                    device,
+                )
             )
-            train_losses.append(train_loss)
-            # print(
-            #     f"Training   - Loss Breakdown - Reconstruction Loss: {train_loss_rec:.6f}, "
-            #     f"Triplet Loss: {train_loss_trip:.6f}, BCE Loss: {train_loss_BCE:.6f}"
-            # )
+            print(
+                f"Training   - Loss Breakdown - Reconstruction Loss: {train_loss_rec:.6f}, "
+                f"Triplet Loss: {train_loss_trip:.6f}, BCE Loss: {train_loss_BCE:.6f}"
+            )
             print(f"Training   - Total Loss: {train_loss:.6f}")
 
             # Validation phase
-            val_loss = validate_tracklet_graph_model(
-                tracklet_graph_model, val_data, loss_weight, device
+            val_loss, val_loss_rec, val_loss_trip, val_loss_BCE = (
+                validate_tracklet_graph_model(
+                    tracklet_graph_model, val_data, loss_weight, device
+                )
             )
-            val_losses.append(val_loss)
-            # print(
-            #     f"Validation - Loss Breakdown - Reconstruction Loss: {val_loss_rec:.6f}, "
-            #     f"Triplet Loss: {val_loss_trip:.6f}, BCE Loss: {val_loss_BCE:.6f}"
-            # )
+            print(
+                f"Validation - Loss Breakdown - Reconstruction Loss: {val_loss_rec:.6f}, "
+                f"Triplet Loss: {val_loss_trip:.6f}, BCE Loss: {val_loss_BCE:.6f}"
+            )
             print(f"Validation - Total Loss: {val_loss:.6f}")
-
-            # 在每个epoch结束时更新学习率
-            # scheduler.step()
 
             # Save model if it has the best validation loss
             if val_loss < best_val_loss:
@@ -563,7 +393,6 @@ def main():
                         "epoch": epoch + 1,
                         "model_state_dict": tracklet_graph_model.state_dict(),
                         "optimizer_state_dict": tracklet_optimizer.state_dict(),
-                        # "scheduler_state_dict": scheduler.state_dict(),  # 保存scheduler状态
                         "train_loss": train_loss,
                         "val_loss": val_loss,
                     },
@@ -580,7 +409,6 @@ def main():
                     "epoch": epoch + 1,
                     "model_state_dict": tracklet_graph_model.state_dict(),
                     "optimizer_state_dict": tracklet_optimizer.state_dict(),
-                    # "scheduler_state_dict": scheduler.state_dict(),  # 保存scheduler状态
                     "train_loss": train_loss,
                     "val_loss": val_loss,
                 },
@@ -596,21 +424,6 @@ def main():
             else:
                 raise e
 
-    # Plot final loss curves
-    print("Training completed! Generating final loss curves...")
-    plot_loss_curves(train_losses, val_losses, "plots/final_loss_curves.png")
-
-    # Print training summary
-    print("\n" + "=" * 60)
-    print("TRAINING SUMMARY")
-    print("=" * 60)
-    print(f"Total epochs: {num_epochs}")
-    print(f"Best validation loss: {best_val_loss:.6f}")
-    print(f"Final training loss: {train_losses[-1]:.6f}")
-    print(f"Final validation loss: {val_losses[-1]:.6f}")
-    print(f"Loss curves saved to: plots/final_loss_curves.png")
-    print("=" * 60)
-
 
 def prepare_seq_info(data, device):
     """
@@ -622,9 +435,7 @@ def prepare_seq_info(data, device):
 
     seq_info = []
     id_map = torch.randperm(num_id_vocabulary) + 1
-    global_exist_id = set()
     # print("id map", id_map)
-    cnt = 0
     for i in range(1, len(data)):
         N, D, T = data[i]["tracklet_bbox"].shape
         _N, _, _ = data[i - 1]["tracklet_bbox"].shape
@@ -639,59 +450,57 @@ def prepare_seq_info(data, device):
 
         # print(data[i]["tracklet_mask"].shape)
 
-        trajectory_bbox[:N, :, :] = data[i]["tracklet_bbox"].clone()
-        trajectory_masks[:N, :, :] = data[i]["tracklet_mask"].clone()
-        trajectory_id_labels[:N] = data[i]["gt_labels"].clone()
+        trajectory_bbox[:N, :, :] = data[i]["tracklet_bbox"]
+        trajectory_masks[:N, :, :] = data[i]["tracklet_mask"]
+        trajectory_id_labels[:N] = data[i]["gt_labels"]
         trajectory_id_masks = trajectory_id_labels != -1
-        history_bbox[:_N, :, :] = data[i - 1]["tracklet_bbox"].clone()
-        history_masks[:_N, :, :] = data[i - 1]["tracklet_mask"].clone()
+        history_bbox[:_N, :, :] = data[i - 1]["tracklet_bbox"]
+        history_masks[:_N, :, :] = data[i - 1]["tracklet_mask"]
         history_id_labels[:_N] = data[i - 1]["gt_labels"]
         history_id_masks = history_id_labels != -1
 
-        history_time_window = data[i - 1]["time_window"]
-
-        if history_time_window[0] == 1.0:
-            id_map = torch.randperm(num_id_vocabulary) + 1
-            global_exist_id = set()
-            # print("seq start")
-            cnt += 1
-            # print("seq count", cnt)
-
-        # trajectory_id_labels = id_map[trajectory_id_labels]
-        # history_id_labels = id_map[history_id_labels]
-        # valid_trajectory_ids = trajectory_id_labels[trajectory_id_masks]
-        valid_history_ids = history_id_labels[history_id_masks]
-        valid_tracklet_ids = trajectory_id_labels[trajectory_id_masks]
-        # print("global_exist_id", sorted(list(global_exist_id)))
-
-        global_exist_id.update(valid_history_ids.cpu().numpy())
-        # print("global_exist_id", sorted(list(global_exist_id)))
-        unique_track_ids = torch.unique(trajectory_id_labels[trajectory_id_masks])
-        newborn_track_ids = []
-        for track_id in unique_track_ids:
-            track_id_val = track_id.item()
-            if track_id_val not in global_exist_id:
-                newborn_track_ids.append(track_id)
-        newborn_track_ids = (
-            torch.tensor(newborn_track_ids, device=device)
-            if newborn_track_ids
-            else torch.tensor([], device=device)
+        (
+            trajectory_bbox,
+            trajectory_masks,
+            trajectory_id_labels,
+            trajectory_id_masks,
+            history_bbox,
+            history_masks,
+            history_id_labels,
+            history_id_masks,
+        ) = trajectory_augmentation(
+            trajectory_bbox,
+            trajectory_masks,
+            trajectory_id_labels,
+            trajectory_id_masks,
+            history_bbox,
+            history_masks,
+            history_id_labels,
+            history_id_masks,
+            id_map,
         )
+        # print(history_id_labels.shape)
+        # print(history_id_masks.shape)
 
-        # if len(newborn_track_ids) > 0:
-        #     # print("global_exist_id", sorted(list(global_exist_id)))
-        #     # print("valid_history_ids", valid_history_ids)
-        #     # print("valid_tracklet_ids", valid_tracklet_ids)
-        #     # print("newborn_track_ids", newborn_track_ids)
-
-        #     for newborn_id in newborn_track_ids:
-        #         trajectory_id_labels[trajectory_id_labels == newborn_id] = (
-        #             num_id_vocabulary + 1
-        #         )
-        # print("trajectory_id_labels", trajectory_id_labels)
-        global_exist_id.update(valid_tracklet_ids.cpu().numpy())
-        # print("history_id_labels", history_id_labels)
-        # print("global_exist_id", sorted(list(global_exist_id)))
+        unique_track_ids = torch.unique(trajectory_id_labels[trajectory_id_masks])
+        unique_history_ids = torch.unique(history_id_labels[history_id_masks])
+        newborn_track_ids = unique_track_ids[
+            ~torch.isin(unique_track_ids, unique_history_ids)
+        ]
+        if len(newborn_track_ids) > 0:
+            # print(data[i]["tracklet_labels"])
+            for newborn_id in newborn_track_ids:
+                trajectory_id_labels[trajectory_id_labels == newborn_id] = (
+                    num_id_vocabulary + 1
+                )
+            # print(f"Trajectory ID labels: {trajectory_id_labels}")
+            # print(f"History ID labels: {history_id_labels}")
+            # print(f"unique track IDs: {unique_track_ids}")
+            # print(f"unique history IDs: {unique_history_ids}")
+            # print(f"Newborn track IDs: {newborn_track_ids}")
+            # print(
+            #     f"Newborn track ID {newborn_id} found, assigning to {num_id_vocabulary + 1}"
+            # )
 
         window_info = {
             "tracklet_bbox": trajectory_bbox.to(device),
@@ -729,12 +538,11 @@ def trajectory_augmentation(
     trajectory_id_labels = id_map[trajectory_id_labels]
     history_id_labels = id_map[history_id_labels]
     # print("After", trajectory_id_labels)
-    # print("trajectory_id_masks", trajectory_id_masks)
 
     # N, D, T = trajectory_bbox.shape
     # shuffle_indices = torch.randperm(N)
     # trajectory_bbox = trajectory_bbox[shuffle_indices]
-    # trajectory_masks = trajectory_masks[shuffle_indices]s
+    # trajectory_masks = trajectory_masks[shuffle_indices]
     # trajectory_id_labels = trajectory_id_labels[shuffle_indices]
     # trajectory_id_masks = trajectory_id_masks[shuffle_indices]
 

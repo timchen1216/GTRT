@@ -10,7 +10,7 @@ import time
 
 from mot_data_loader import CreateMOTDataset, HFlip, BoxShift, BoxClip, BoxJitter, AddFP
 import build_det_graph
-import head_utils, head_gnn
+import head_utils, models.transformer as transformer
 
 from config import *
 from tqdm import tqdm
@@ -147,7 +147,7 @@ def test_tracklet_graph():
     color_table = np.random.rand(5000, 3)
 
     # tracklet graph model
-    tracklet_graph_model = head_gnn.BoxEmb(tracklet_temporal_len + 1, device)
+    tracklet_graph_model = transformer.BoxEmb(tracklet_temporal_len + 1, device)
     tracklet_graph_model = tracklet_graph_model.to(device)
     tracklet_graph_checkpoint = torch.load(
         tracklet_graph_model_load_path, map_location=device
